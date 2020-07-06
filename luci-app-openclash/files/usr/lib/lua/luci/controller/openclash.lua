@@ -5,9 +5,12 @@ function index()
 		return
 	end
 
-
-	entry({"admin", "services", "openclash"},alias("admin", "services", "openclash", "client"), _("OpenClash"), 50).dependent = true
-	entry({"admin", "services", "openclash", "client"},form("openclash/client"),_("Overviews"), 20).leaf = true
+	local page
+	
+	page = entry({"admin", "services", "openclash"}, alias("admin", "services", "openclash", "client"), _("OpenClash"), 50)
+	page.dependent = true
+	page.acl_depends = { "luci-app-openclash" }
+	entry({"admin", "services", "openclash", "client"},cbi("openclash/client"),_("Overviews"), 20).leaf = true
 	entry({"admin", "services", "openclash", "status"},call("action_status")).leaf=true
 	entry({"admin", "services", "openclash", "state"},call("action_state")).leaf=true
 	entry({"admin", "services", "openclash", "startlog"},call("action_start")).leaf=true
@@ -20,17 +23,20 @@ function index()
 	entry({"admin", "services", "openclash", "coretunupdate"},call("action_core_tun_update"))
 	entry({"admin", "services", "openclash", "coregameupdate"},call("action_core_game_update"))
 	entry({"admin", "services", "openclash", "ping"}, call("act_ping"))
-	entry({"admin", "services", "openclash", "download_game_rule"}, call("action_download_rule"))
+	entry({"admin", "services", "openclash", "download_rule"}, call("action_download_rule"))
+	entry({"admin", "services", "openclash", "restore"}, call("action_restore_config"))
 	entry({"admin", "services", "openclash", "settings"},cbi("openclash/settings"),_("Global Settings"), 30).leaf = true
 	entry({"admin", "services", "openclash", "servers"},cbi("openclash/servers"),_("Severs and Groups"), 40).leaf = true
-	entry({"admin", "services", "openclash", "game-settings"},cbi("openclash/game-settings"),_("Game Rules and Groups"), 50).leaf = true
+	entry({"admin", "services", "openclash", "rule-providers-settings"},cbi("openclash/rule-providers-settings"),_("Rule Providers and Groups"), 50).leaf = true
 	entry({"admin", "services", "openclash", "game-rules-manage"},form("openclash/game-rules-manage"), nil).leaf = true
+	entry({"admin", "services", "openclash", "rule-providers-manage"},form("openclash/rule-providers-manage"), nil).leaf = true
 	entry({"admin", "services", "openclash", "config-subscribe"},cbi("openclash/config-subscribe"),_("Config Update"), 60).leaf = true
 	entry({"admin", "services", "openclash", "servers-config"},cbi("openclash/servers-config"), nil).leaf = true
 	entry({"admin", "services", "openclash", "groups-config"},cbi("openclash/groups-config"), nil).leaf = true
 	entry({"admin", "services", "openclash", "proxy-provider-config"},cbi("openclash/proxy-provider-config"), nil).leaf = true
+	entry({"admin", "services", "openclash", "rule-providers-config"},cbi("openclash/rule-providers-config"), nil).leaf = true
 	entry({"admin", "services", "openclash", "config"},form("openclash/config"),_("Config Manage"), 70).leaf = true
-	entry({"admin", "services", "openclash", "log"},form("openclash/log"),_("Logs"), 80).leaf = true
+	entry({"admin", "services", "openclash", "log"},cbi("openclash/log"),_("Server Logs"), 80).leaf = true
 
 end
 local fs = require "luci.openclash"
@@ -79,6 +85,13 @@ local function daip()
 	return daip
 end
 
+local function uh_port()
+	local uh_port = luci.sys.exec("uci get uhttpd.main.listen_http |awk -F ':' '{print $NF}'")
+	if uh_port ~= "80" then
+		return ":" .. uh_port
+	end
+end
+
 local function dase()
 	return luci.sys.exec("uci get openclash.config.dashboard_password 2>/dev/null")
 end
@@ -97,7 +110,7 @@ local function startlog()
 end
 
 local function coremodel()
-  local coremodel = luci.sys.exec("cat /proc/cpuinfo |grep 'cpu model' 2>/dev/null |awk -F ': ' '{print $2}' 2>/dev/null")
+  local coremodel = luci.sys.exec("cat /usr/lib/os-release 2>/dev/null |grep OPENWRT_ARCH 2>/dev/null |awk -F '\"' '{print $2}' 2>/dev/null")
   local coremodel2 = luci.sys.exec("opkg status libc 2>/dev/null |grep 'Architecture' |awk -F ': ' '{print $2}' 2>/dev/null")
   if not coremodel or coremodel == "" then
      return coremodel2 .. "," .. coremodel2
@@ -131,11 +144,11 @@ end
 end
 
 local function corelv()
-	local new = luci.sys.call(string.format("sh /usr/share/openclash/clash_version.sh"))
+	luci.sys.call("sh /usr/share/openclash/clash_version.sh")
 	local core_lv = luci.sys.exec("sed -n 1p /tmp/clash_last_version 2>/dev/null")
 	local core_tun_lv = luci.sys.exec("sed -n 2p /tmp/clash_last_version 2>/dev/null")
 	local core_game_lv = luci.sys.exec("sed -n 3p /tmp/clash_last_version 2>/dev/null")
-	return core_lv .. "," .. core_tun_lv .. "," .. core_game_lv .. "," .. new
+	return core_lv .. "," .. core_tun_lv .. "," .. core_game_lv
 end
 
 local function opcv()
@@ -189,9 +202,17 @@ end
 
 function download_rule()
 	local filename = luci.http.formvalue("filename")
-	local rule_file_dir="/etc/openclash/game_rules/" .. filename
-  local state = luci.sys.call(string.format('/usr/share/openclash/openclash_game_rule.sh "%s" >/dev/null 2>&1',filename))
+  local state = luci.sys.call(string.format('/usr/share/openclash/openclash_download_rule_list.sh "%s" >/dev/null 2>&1',filename))
   return state
+end
+
+function action_restore_config()
+	luci.sys.call("/etc/init.d/openclash stop >/dev/null 2>&1")
+	luci.sys.call("cp '/usr/share/openclash/backup/openclash' '/etc/config/openclash' >/dev/null 2>&1 &")
+	luci.sys.call("cp '/usr/share/openclash/backup/openclash_custom_rules.list' '/etc/openclash/custom/openclash_custom_rules.list' >/dev/null 2>&1 &")
+	luci.sys.call("cp '/usr/share/openclash/backup/openclash_custom_rules_2.list' '/etc/openclash/custom/openclash_custom_rules_2.list' >/dev/null 2>&1 &")
+	luci.sys.call("cp '/usr/share/openclash/backup/openclash_custom_fake_black.conf' '/etc/openclash/custom/openclash_custom_fake_black.conf' >/dev/null 2>&1 &")
+	luci.sys.call("cp '/usr/share/openclash/backup/openclash_custom_hosts.list' '/etc/openclash/custom/openclash_custom_hosts.list' >/dev/null 2>&1 &")
 end
 
 function action_status()
@@ -201,11 +222,13 @@ function action_status()
 		watchdog = is_watchdog(),
 		daip = daip(),
 		dase = dase(),
+		uh_port = uh_port(),
 		web = is_web(),
 		cn_port = cn_port(),
 		mode = mode();
 	})
 end
+
 function action_state()
 	luci.http.prepare_content("application/json")
 	luci.http.write_json({
@@ -300,6 +323,6 @@ end
 function action_download_rule()
 	luci.http.prepare_content("application/json")
 	luci.http.write_json({
-		game_rule_download_status = download_rule();
+		rule_download_status = download_rule();
 	})
 end
